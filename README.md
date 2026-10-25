@@ -10,14 +10,16 @@ Create decks, add cards and review them right in the chat: the model shows you t
 | Tool | `list_decks` | Lists the decks with their card counts |
 | Tool | `create_deck` | Creates an empty deck |
 | Tool | `deck_stats` | Cards due today, new, learning and mature |
-| Tool | `add_card` | Adds a single card |
+| Tool | `add_card` | Adds a single card, with an optional source |
+| Tool | `add_cards` | Saves a batch of up to 50 cards written by Claude (e.g. from a PDF), each with its source; skips duplicates |
 | Tool | `import_cards` | Imports many cards from text (`question :: answer`, one per line), with progress notifications |
 | Tool | `due_cards` | Cards due today, most overdue first |
 | Tool | `grade_card` | Records a 0–5 grade and reschedules the card |
 | Tool | `delete_deck` | Deletes a deck after the user types its name to confirm (elicitation) |
 | Resource | `guide://sm2` | Guide to the grades and how SM-2 computes intervals |
-| Resource | `deck://{name}` | Full content of a deck, with review dates |
+| Resource | `deck://{name}` | Full content of a deck, with sources and review dates |
 | Prompt | `study_session` | Starts a guided study session on a deck |
+| Prompt | `cards_from_document` | Turns an attached document (PDF, notes, slides) into flashcards |
 
 Deck names are lowercase with hyphens, 2 to 40 characters long, for example `computer-networks`.
 
@@ -77,9 +79,38 @@ Once the server is connected, just talk to Claude in plain language: it picks th
 > Default HTTPS port? :: 443
 > What does TCP guarantee over UDP? :: Reliable, ordered delivery
 
-For a few cards Claude uses `add_card`; for a longer list it uses `import_cards`, one `question :: answer` per line. Blank lines and lines starting with `#` are ignored, and malformed lines are reported back to you. You can also ask Claude to write the cards for you, for example *"Make 20 flashcards from these lecture notes and add them to `computer-networks`"*.
+For a few cards Claude uses `add_card`; for a longer list it uses `import_cards`, one `question :: answer` per line. Blank lines and lines starting with `#` are ignored, and malformed lines are reported back to you.
 
-### 2. Study
+### 2. Create cards from a PDF
+
+Claude can read a PDF (or slides, or notes) and write the flashcards for you. The server never opens the file itself: Claude reads the document, writes the cards and saves them with `add_cards`, storing for each card the file and page it came from.
+
+**1. Give Claude the document.**
+
+- In **Claude Code**, reference the file with `@`, for example `@notes/networks-lecture-3.pdf`, or drag it into the prompt.
+- In **Claude Desktop** or **claude.ai**, attach the PDF to the message with the paperclip button.
+
+**2. Ask for the cards** using the built-in prompt. Its arguments are, in order: the document name, the deck, the number of cards (default 20) and an optional topic to focus on.
+
+```
+/study-cards:cards_from_document networks-lecture-3.pdf computer-networks 30 routing
+```
+
+In Claude Desktop, pick `cards_from_document` from the prompt menu and fill in the fields. You can also just ask in your own words:
+
+> Read @notes/networks-lecture-3.pdf and make about 30 flashcards for the `computer-networks` deck, focusing on routing.
+
+**3. Review the draft.** Claude first shows you the list of cards and waits. Ask for changes before anything is saved, for example *"drop cards 4 and 9"*, *"make the answer to card 12 shorter"* or *"add more cards on chapter 2"*.
+
+**4. Confirm.** When you say ok, Claude creates the deck if it does not exist yet, saves the cards in batches of up to 50 and tells you how many were added.
+
+Each card follows a few rules from the prompt: one idea per card, questions that make sense without the document, answers taken from the document only, and coverage of the whole document rather than just the first pages.
+
+You can run the same PDF again, or a new version of it: questions already in the deck are skipped as duplicates (ignoring case and extra spaces), so you only get the new ones. To see where each card came from, ask Claude to *"show me all the cards in `computer-networks`"*: the table includes a **Source** column, such as `networks-lecture-3.pdf, p. 12`.
+
+> **Tip:** for long documents (100+ pages), work one chapter or topic at a time, for example *"make 25 flashcards from chapter 4 of @textbook.pdf for `computer-networks`"*. You get better cards than asking for 200 at once.
+
+### 3. Study
 
 Start a session with the built-in prompt:
 
@@ -99,7 +130,7 @@ During the session Claude:
 
 If you think a grade is wrong, say so before Claude saves it. Grading the same card again does not undo the first grade: it counts as a second review.
 
-### 3. Check progress and manage decks
+### 4. Check progress and manage decks
 
 > Which decks do I have?
 

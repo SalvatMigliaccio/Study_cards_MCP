@@ -1,14 +1,13 @@
-"""Study-cards-mcp: study flashcards with spaced repetition. exposed by MCP as a service.
+"""Study-cards-mcp: study flashcards with spaced repetition, exposed as an MCP server.
 
-Tool -> action decised by the model (create card, review card, list decks, get deck, delete deck, interrogate deck)
-Resource -> context (guide to algorithm, content of a deck)
-Prompt -> procedure chosen by the user (/study_session)
+Tool -> action decided by the model (create decks and cards, review cards, deck stats, delete a deck)
+Resource -> context (guide to the algorithm, content of a deck)
+Prompt -> procedure chosen by the user (/study_session, /cards_from_document)
 """
 
-from __future__ import annotations #future means that type hints can be used as forward references, allowing the use of types that are defined later in the code.
+from __future__ import annotations  # type hints are evaluated lazily, so they can refer to names defined later
 
 import argparse
-from ast import pattern
 import os
 import sqlite3
 import sys
@@ -16,27 +15,31 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 from mcp.server import CacheHint, MCPServer
-from mcp.server.elicitation import AcceptedElicitation, ElicitationResult  
+from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, Elicit, RequestStateSecurity, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from . import store
 
-#Config
+# --Config--
 DeckName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,39}$",
                                 description="Deck name in lowercase with hyphens, e.g. computer-networks")]
 CardId = Annotated[str, Field(pattern=r"^card_[A-Za-z0-9_-]{8,}$")]
+Source = Annotated[str | None, Field(max_length=200,
+                                     description="Where the card comes from, e.g. 'networks-notes.pdf, p. 12'")]
 
 _key = os.environ.get("STUDY_CARDS_STATE_KEY")
 mcp = MCPServer(
     "study-cards",
     version = "0.1.0",
-    
+
     instructions = "Flashcards with spaced repetition. For a study session: call due_cards, "
                    "show the user ONLY the front of one card at a time, wait for the user's answer, "
-                   "compare it with the back, then record a grade from 0 to 5 with grade_card using the card_id.",
-    
+                   "compare it with the back, then record a grade from 0 to 5 with grade_card using the card_id. "
+                   "To create cards from a document, write them yourself and save them with add_cards, "
+                   "giving the source of each card.",
+
     request_state_security = (RequestStateSecurity(keys=[_key]) if _key
                               else RequestStateSecurity.ephemeral()),
     cache_hints = {
@@ -57,14 +60,14 @@ def _require_deck(name:str) -> store.Deck:
                         f" or create_deck to create it.")
     return deck
 
-# --Decks--
+# === DECKS ===
 class DeckList(BaseModel):
     decks: list[store.Deck]
-    
+
 @mcp.tool(annotations=READ_ONLY)
 def list_decks() -> DeckList:
-     """List the flashcard decks with their card counts. Use it to find out what can be studied."""
-     return DeckList(decks=store.list_decks())
+    """List the flashcard decks with their card counts. Use it to find out what can be studied."""
+    return DeckList(decks=store.list_decks())
 
 
 @mcp.tool(annotations=WRITE)
@@ -87,10 +90,11 @@ def deck_stats(deck: DeckName) -> store.DeckStats:
 @mcp.tool(annotations=WRITE)
 def add_card(deck: DeckName,
              front: Annotated[str, Field(min_length=1, max_length=500, description="Question")],
-             back: Annotated[str, Field(min_length=1, max_length=2000, description="Answer")]) -> store.Card:
-    """Add a single flashcard to an existing deck. For many cards use import_cards."""
+             back: Annotated[str, Field(min_length=1, max_length=2000, description="Answer")],
+             source: Source = None) -> store.Card:
+    """Add a single flashcard to an existing deck. For many cards use add_cards or import_cards."""
     _require_deck(deck)
-    return store.add_card(deck, front.strip(), back.strip())
+    return store.add_card(deck, front.strip(), back.strip(), source)
 
 
 class ImportReport(BaseModel):
@@ -105,10 +109,12 @@ async def import_cards(
     text: Annotated[str, Field(max_length=100_000,
                                description="One card per line in the format: question :: answer")],
     ctx: Context,
+    source: Source = None,
 ) -> ImportReport:
     """Import many flashcards from text, one per line in the format 'question :: answer'.
 
     Blank lines and lines starting with # are ignored; malformed lines are reported in skipped_lines.
+    The optional source is stored on every imported card.
     """
     _require_deck(deck)
     lines = [l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
@@ -118,7 +124,7 @@ async def import_cards(
         if not sep or not front.strip() or not back.strip():
             skipped.append(line.strip()[:120])
         else:
-            store.add_card(deck, front.strip()[:500], back.strip()[:2000])
+            store.add_card(deck, front.strip()[:500], back.strip()[:2000], source)
             added += 1
         if i % 10 == 0 or i == len(lines):          # progress notification to the client
             await ctx.report_progress(i, len(lines), f"{i}/{len(lines)} lines processed")
@@ -152,6 +158,35 @@ def grade_card(card_id: CardId,
         raise ToolError(f"Card {card_id} does not exist. Use a card_id returned by due_cards.")
     return card
 
+# === CARDS FROM A DOCUMENT ===
+class NewCard(BaseModel):
+    front: str = Field(min_length=1, max_length=500,
+                       description="A question about a single idea, understandable without the document")
+    back: str = Field(min_length=1, max_length=2000, description="A short, precise answer, 2-3 sentences at most")
+    source: Source = None
+
+
+class AddCardsReport(BaseModel):
+    deck: str
+    added: int
+    duplicates: list[str]
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                                      idempotentHint=True, openWorldHint=False))
+def add_cards(deck: DeckName,
+              cards: Annotated[list[NewCard], Field(min_length=1, max_length=50)]) -> AddCardsReport:
+    """Save a batch of flashcards (at most 50 per call) to an existing deck.
+
+    Use it for cards you wrote yourself, for example from a document: for each card give
+    front, back and, if you know it, the source (file and page). Questions already in the deck
+    are skipped and reported in 'duplicates', so repeating the call does not create duplicates.
+    """
+    _require_deck(deck)
+    added, duplicates = store.add_cards(
+        deck, [(c.front.strip(), c.back.strip(), c.source) for c in cards])
+    return AddCardsReport(deck=deck, added=added, duplicates=duplicates)
+
 # === DELETION ===
 class DeleteConfirmation(BaseModel):
     typed_name: str = Field(description="Type the exact deck name to confirm the deletion")
@@ -181,7 +216,7 @@ def delete_deck(
         raise ToolError(f"Deck '{deck}' does not exist.")
     return f"Deck '{deck}' deleted along with {removed} cards."
 
-# === RESOURCES AND PROMPTS ===
+# === RESOURCES ===
 @mcp.resource("guide://sm2", name="How spaced repetition works", mime_type="text/markdown")
 def sm2_guide() -> str:
     """Explanation of the 0-5 grades and how SM-2 computes the next review."""
@@ -197,13 +232,14 @@ def sm2_guide() -> str:
 
 @mcp.resource("deck://{name}", name="Deck content", mime_type="text/markdown")
 def deck_content(name: str) -> str:
-    """All the cards in a deck with their next review date."""
+    """All the cards in a deck with their source and next review date."""
     deck = _require_deck(name)
-    rows = "\n".join(f"| {c.front} | {c.back} | {c.due} |" for c in store.cards_in_deck(name))
+    rows = "\n".join(f"| {c.front} | {c.back} | {c.source or '-'} | {c.due} |"
+                     for c in store.cards_in_deck(name))
     return (f"# Deck: {deck.name}\n\n{deck.description}\n\n"
-            f"| Question | Answer | Next review |\n|---|---|---|\n{rows}\n")
+            f"| Question | Answer | Source | Next review |\n|---|---|---|---|\n{rows}\n")
 
-
+# === PROMPTS ===
 @mcp.prompt()
 def study_session(deck: str, max_cards: str = "10") -> str:
     """Start an interactive study session on a deck."""
@@ -212,6 +248,28 @@ def study_session(deck: str, max_cards: str = "10") -> str:
             "wait for my answer, then tell me whether it is correct and show the expected answer, "
             "assign a 0-5 grade following the guide://sm2 guide and record it with grade_card. "
             "At the end, call deck_stats and summarize my progress and what to review.")
+
+
+@mcp.prompt()
+def cards_from_document(document: str, deck: str, num_cards: str = "20", focus: str = "") -> str:
+    """Create flashcards from a document attached to the conversation (PDF, notes, slides)."""
+    focus_line = f"Focus on: {focus}. " if focus else ""
+    return (
+        f"Analyze the document '{document}' I gave you and create about {num_cards} flashcards "
+        f"for the deck '{deck}'. {focus_line}\n\n"
+        "Rules for the cards:\n"
+        "1. One idea per card: definitions, differences between concepts, causes and effects, "
+        "steps of a procedure, formulas and the meaning of their terms.\n"
+        "2. The question must be clear without the document at hand; no yes/no questions.\n"
+        "3. The answer is short and faithful to the document: do not add information that is not in it.\n"
+        "4. Cover the whole document evenly, not just the first pages.\n"
+        "5. In 'source', give the file name and the page or section.\n\n"
+        "Procedure:\n"
+        "a) First show me the list of cards and wait for my approval or corrections.\n"
+        "b) After my ok, call list_decks: if the deck does not exist, create it with create_deck.\n"
+        "c) Save the cards with add_cards, in batches of at most 50.\n"
+        "d) Tell me how many cards were added and which ones were already in the deck."
+    )
 
 # --Startup--
 def main() -> None:
