@@ -1,0 +1,25 @@
+[project]
+name = "study-cards-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Salvat.Migliaccio", email = "salvatore.migliaccio998@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "mcp>=2.3,<3",
+]
+
+[project.scripts]
+study-cards-mcp = "study_cards_mcp.server:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.15.1",
+    "pytest>=9.1.1",
+]

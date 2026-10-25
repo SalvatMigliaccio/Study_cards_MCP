@@ -1,0 +1,1 @@
+"""study-cards-mcp: flashcard with spaced repetition exposed via MCP."""
