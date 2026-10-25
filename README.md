@@ -50,9 +50,53 @@ On Windows, use a path like `D:/Projects/study-cards-mcp`. By default the server
 
 Check with `claude mcp list`: you should see `study-cards ... ✔ Connected`. If you see `Connection closed`, the path passed to `--directory` is almost always wrong.
 
+## Connecting it to Claude Desktop
+
+Claude Desktop starts the server on your own computer, just like Claude Code, so nothing has to be published online.
+
+1. Install Claude Desktop from [claude.ai/download](https://claude.ai/download) and sign in.
+2. Open **Settings → Developer → Edit Config**. This opens the folder that contains `claude_desktop_config.json`.
+3. Add a top-level `"mcpServers"` key with the `study-cards` entry, next to the keys already in the file (such as `"preferences"`), not inside them:
+
+   ```json
+   {
+     "preferences": { "...": "..." },
+     "mcpServers": {
+       "study-cards": {
+         "command": "C:\\Users\\<you>\\.local\\bin\\uv.exe",
+         "args": ["run", "--directory", "D:\\path\\to\\study-cards-mcp", "study-cards-mcp"],
+         "env": { "STUDY_CARDS_DB": "D:\\path\\to\\study-cards-mcp\\study_cards.db" }
+       }
+     }
+   }
+   ```
+
+   - Remember the comma after the `}` that closes the key before `"mcpServers"`. If the JSON is invalid, Claude Desktop loads no MCP servers at all.
+   - Use the **full path to `uv`**: Claude Desktop does not always see the same `PATH` as your terminal. Find it with `where uv` on Windows or `which uv` on macOS/Linux. On macOS/Linux, use normal forward-slash paths.
+   - If `STUDY_CARDS_DB` points to the same file you use in Claude Code, both apps share the same decks.
+4. **Quit Claude Desktop completely** (on Windows, right-click the tray icon near the clock and choose **Quit**; closing the window is not enough) and open it again.
+5. Check the connection: in a new chat, click **+ → Connectors**. `study-cards` should be listed and switched on, and **Add from study-cards** shows the *Study session* and *Cards from document* prompts and the *How spaced repetition works* resource. If the server is missing or shows an error, see **Settings → Developer** for its status and logs.
+
+`deck://{name}` does not appear in that menu: it needs a deck name, so Claude reads it when you ask to see the cards of a deck.
+
+### Quick test
+
+Run through these steps in a new chat to check that everything works:
+
+1. **Connection:** ask *"Which decks do I have?"*. The first time, Claude asks for permission to use `list_decks`; you can allow read-only tools permanently.
+2. **Cards from a PDF:** attach a PDF with **+ → Upload file**, then choose **+ → Connectors → Add from study-cards → Cards from document**. Fill in `document` (the file name), `deck` (`test-pdf`) and `num_cards` (`10`). Claude shows you a draft: reply "ok" and check that it calls `create_deck` and `add_cards`.
+3. **Duplicates:** repeat step 2 with the same PDF. Claude should report the cards as already present (`duplicates`).
+4. **Study:** choose **Study session** with `deck` = `test-pdf`, answer 2–3 questions and look at the stats at the end.
+5. **Sources:** ask *"Show me all the cards in `test-pdf`"*. The table should have a Source column with file and page.
+6. **Deletion:** ask *"Delete the deck `test-pdf`"*. A form should ask you to type the deck name. If you get "cancelled" instead, your Claude Desktop version does not support this kind of request (elicitation) yet: the deck is kept, and it is not a server error.
+
+### claude.ai in the browser
+
+claude.ai cannot reach a server running on your computer: it only accepts MCP servers reachable from the internet, added as a **custom connector** in **Settings → Connectors**. You would have to run the server with `--transport http` and expose it through a tunnel such as `ngrok` or `cloudflared`. The server has no authentication, so anyone with the URL could read and delete your decks. Use Claude Desktop or Claude Code instead.
+
 ### Other MCP hosts
 
-For clients configured with a JSON file (such as Claude Desktop):
+Any MCP client that can start a local stdio server works. Most use the same JSON shape as Claude Desktop:
 
 ```json
 {
@@ -68,7 +112,7 @@ For clients configured with a JSON file (such as Claude Desktop):
 
 ## How to use it with Claude
 
-Once the server is connected, just talk to Claude in plain language: it picks the right tool on its own. In Claude Code you can type `/mcp` to check that `study-cards` and its tools are loaded.
+Once the server is connected, just talk to Claude in plain language: it picks the right tool on its own. In Claude Code you can type `/mcp` to check that `study-cards` and its tools are loaded; in Claude Desktop, look under **+ → Connectors**.
 
 ### 1. Create a deck and add cards
 
@@ -88,7 +132,7 @@ Claude can read a PDF (or slides, or notes) and write the flashcards for you. Th
 **1. Give Claude the document.**
 
 - In **Claude Code**, reference the file with `@`, for example `@notes/networks-lecture-3.pdf`, or drag it into the prompt.
-- In **Claude Desktop** or **claude.ai**, attach the PDF to the message with the paperclip button.
+- In **Claude Desktop**, attach the PDF with **+ → Upload file**.
 
 **2. Ask for the cards** using the built-in prompt. Its arguments are, in order: the document name, the deck, the number of cards (default 20) and an optional topic to focus on.
 
@@ -96,7 +140,7 @@ Claude can read a PDF (or slides, or notes) and write the flashcards for you. Th
 /study-cards:cards_from_document networks-lecture-3.pdf computer-networks 30 routing
 ```
 
-In Claude Desktop, pick `cards_from_document` from the prompt menu and fill in the fields. You can also just ask in your own words:
+In Claude Desktop, choose **+ → Connectors → Add from study-cards → Cards from document** and fill in the fields. You can also just ask in your own words:
 
 > Read @notes/networks-lecture-3.pdf and make about 30 flashcards for the `computer-networks` deck, focusing on routing.
 
@@ -118,7 +162,7 @@ Start a session with the built-in prompt:
 /study-cards:study_session computer-networks
 ```
 
-In Claude Desktop and other hosts, pick `study_session` from the prompt menu, or simply ask *"Let's study `computer-networks`"*.
+In Claude Desktop, choose **+ → Connectors → Add from study-cards → Study session**; in other hosts, pick `study_session` from the prompt menu. Or simply ask *"Let's study `computer-networks`"*.
 
 During the session Claude:
 
